@@ -195,9 +195,10 @@ def compute_heatmap_matrix(
 
 # ── Shared map builder ─────────────────────────────────────────────────────────
 
-def render_deck(layers: list, tooltip: dict, height: int = 720) -> None:
+def render_deck(layers: list, tooltip: dict, height: int = 720,
+                view_state: pdk.ViewState | None = None) -> None:
     st.pydeck_chart(
-        pdk.Deck(layers=layers, initial_view_state=SC_CENTER,
+        pdk.Deck(layers=layers, initial_view_state=view_state or SC_CENTER,
                  tooltip=tooltip, map_style=MAP_STYLE),
         use_container_width=True, height=height,
     )
@@ -295,6 +296,12 @@ with ctrl:
         )
     else:
         h3_min_trips = 0
+
+    st.divider()
+    if st.button("Reset map view", use_container_width=True):
+        for k in ("_map_lat", "_map_lon", "_map_zoom", "_sel_row"):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 if not t2_frc:
     main_col.warning("Select at least one road class.")
@@ -439,7 +446,11 @@ with main_col:
             "% Over Limit: {pct_diff}%",
             "AT Trips (hex): {trips_disp}",
         ])
-        render_deck(layers, risk_tt, height=650)
+        _lat  = st.session_state.get("_map_lat", SC_CENTER.latitude)
+        _lon  = st.session_state.get("_map_lon", SC_CENTER.longitude)
+        _zoom = st.session_state.get("_map_zoom", SC_CENTER.zoom)
+        render_deck(layers, risk_tt, height=650,
+                    view_state=pdk.ViewState(latitude=_lat, longitude=_lon, zoom=_zoom, pitch=0))
 
         st.divider()
 
@@ -461,27 +472,31 @@ with main_col:
         )
 
         st.subheader(f"Top {top_n} High-Risk Links")
+        st.caption("Click a row to zoom the map to that link. Click again to deselect.")
 
+        # Build table with a hidden _pos column so we can trace back to risk_df paths.
+        risk_df_r = risk_df.reset_index(drop=True)
         table_df = pd.DataFrame({
-            "Street Name":            risk_df["streetName"].replace("", "—").values,
-            "FRC":                    risk_df["frc"].map(
+            "Street Name":            risk_df_r["streetName"].replace("", "—").values,
+            "FRC":                    risk_df_r["frc"].map(
                                           lambda x: FRC_LABELS.get(int(x), f"FRC {x}")
                                       ).values,
-            "Speed Limit (mph)":      risk_df["sl_disp"].values,
-            "P85 Speed (mph)":        risk_df["p85_disp"].values,
-            "% Over Limit":           risk_df["pct_diff"].values,
-            "AADT":                   risk_df["aadt_disp"].values,
-            "Active Trans Trips (hex)": risk_df["trips_disp"].values,
+            "Speed Limit (mph)":      risk_df_r["sl_disp"].values,
+            "P85 Speed (mph)":        risk_df_r["p85_disp"].values,
+            "% Over Limit":           risk_df_r["pct_diff"].values,
+            "AADT":                   risk_df_r["aadt_disp"].values,
+            "Active Trans Trips (hex)": risk_df_r["trips_disp"].values,
             "SVI Rating (hex)":       np.where(
-                                          risk_df["svi_disp"].values == "",
+                                          risk_df_r["svi_disp"].values == "",
                                           "—",
-                                          risk_df["svi_disp"].values,
+                                          risk_df_r["svi_disp"].values,
                                       ),
             "Crash History (hex)":    np.where(
-                                          risk_df["crash_disp"].values == "",
+                                          risk_df_r["crash_disp"].values == "",
                                           "—",
-                                          risk_df["crash_disp"].values,
+                                          risk_df_r["crash_disp"].values,
                                       ),
+            "_pos":                   np.arange(len(risk_df_r)),
         }).sort_values("% Over Limit", ascending=False)
 
         # Apply table filters
@@ -494,12 +509,19 @@ with main_col:
         if svi_filter and len(svi_filter) < len(SVI_OPTIONS):
             table_df = table_df[table_df["SVI Rating (hex)"].isin(svi_filter)]
 
-        table_df = table_df.head(top_n).reset_index(drop=True)
+        table_df = table_df.head(top_n)
 
-        st.dataframe(
+        # Build a list of paths aligned to the current table row order.
+        table_paths = [risk_df_r.iloc[pos]["path"] for pos in table_df["_pos"].tolist()]
+
+        table_df = table_df.drop(columns=["_pos"]).reset_index(drop=True)
+
+        event = st.dataframe(
             table_df,
             use_container_width=True,
             hide_index=False,
+            on_select="rerun",
+            selection_mode="single-row",
             column_config={
                 "Speed Limit (mph)":          st.column_config.NumberColumn(format="%d mph"),
                 "P85 Speed (mph)":            st.column_config.NumberColumn(format="%d mph"),
@@ -510,3 +532,20 @@ with main_col:
                 "SVI Rating (hex)":           st.column_config.TextColumn(),
             },
         )
+
+        # Handle row selection → zoom map to that link.
+        sel_rows = event.selection.rows
+        new_sel  = sel_rows[0] if sel_rows else None
+        old_sel  = st.session_state.get("_sel_row")
+        if new_sel != old_sel:
+            st.session_state["_sel_row"] = new_sel
+            if new_sel is not None and new_sel < len(table_paths):
+                path = table_paths[new_sel]
+                mid  = path[len(path) // 2]
+                st.session_state["_map_lon"]  = mid[0]
+                st.session_state["_map_lat"]  = mid[1]
+                st.session_state["_map_zoom"] = 14
+            else:
+                for k in ("_map_lat", "_map_lon", "_map_zoom"):
+                    st.session_state.pop(k, None)
+            st.rerun()

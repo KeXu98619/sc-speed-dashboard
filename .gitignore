@@ -1,6 +1,9 @@
-data/
-*.parquet
+# Raw large source files - do not commit
 *.geojson
 *.geoparquet
+TomTomData/
+
+# Secrets
 .streamlit/secrets.toml
+
 __pycache__/
