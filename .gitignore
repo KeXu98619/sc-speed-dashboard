@@ -1,0 +1,6 @@
+data/
+*.parquet
+*.geojson
+*.geoparquet
+.streamlit/secrets.toml
+__pycache__/
